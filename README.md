@@ -1,58 +1,67 @@
-# Salesforce DX Project
+# Salesforce Developer Portfolio
 
-Salesforce DX is a development approach that brings source-driven development, team collaboration, and continuous integration to the Salesforce Platform. Instead of working directly in an org through a web browser, you work with metadata as source files in a local DX project, track changes in version control, and deploy through automated processes.
+Hands-on Salesforce projects built in a free Developer Edition org, each one focused on a core developer skill. Every project lives on its own branch, is merged through a pull request, and comes with tests.
 
-This project template gets you started with the tools and structure you need to build Salesforce applications using source control, scratch orgs, and the Salesforce CLI.
+| # | Project | Skills |
+|---|---------|--------|
+| 1 | [Lead Priority Trigger](#project-1-lead-priority-trigger) | Apex triggers, handler pattern, Apex testing |
 
-## Prerequisites
+---
 
-Before you start, make sure you have:
+## Project 1: Lead Priority Trigger
 
-- **Salesforce CLI** - Download from [developer.salesforce.com/tools/salesforcecli](https://developer.salesforce.com/tools/salesforcecli). See [Install Salesforce CLI](https://developer.salesforce.com/docs/atlas.en-us.sfdx_setup.meta/sfdx_setup/sfdx_setup_install_cli.htm) for details.
-- **VS Code with Salesforce Extension Pack** - See [Installation Instructions](https://developer.salesforce.com/docs/platform/sfvscode-extensions/guide/install.html) for details. Includes the Agentforce Vibes extension.
-- **A development org** - Sign up for a free Developer Edition org [here](https://developer.salesforce.com/signup).
-- **Dev Hub enabled** (optional, required to create scratch orgs) - You can enable Dev Hub in your development org under Setup > Dev Hub.  See [Provide Developers Access to Salesforce DX Tools](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_setup_dx_tools.htm).
+### What it does
+Whenever a Lead is created or edited, a `before insert` / `before update` trigger automatically sets a custom picklist field, `Lead_Priority__c` (High / Medium / Low), based on the lead's annual revenue and industry. Sales reps no longer have to rank leads by hand.
 
-## Project Structure
+### Business rules
+Rules are evaluated top to bottom, and the first match wins:
 
-Your DX project follows this structure:
+| Priority | Condition |
+|----------|-----------|
+| **High** | Annual revenue is **10,000,000 or more** |
+| **Medium** | Annual revenue is **1,000,000 or more**, **or** the industry is Technology or Finance |
+| **Low** | Everything else, including leads with no revenue entered |
 
-- **`force-app/main/default/`** - Your metadata source files live in this default package directory. You can configure additional package directories in the `sfdx-project.json` file.
-- **`config/`** - Scratch org definitions and project settings
-- **`scripts/`** - Automation scripts for common tasks
-- **`sfdx-project.json`** - Project manifest that defines package directories, namespace, API version, and other project-level settings
+A lead with 20M revenue in Technology matches both the High and Medium rules and lands in **High**, which is why the order matters.
 
-See [Salesforce DX Project Configuration](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_dev_ws_config.htm).
+### How it's built
+- `LeadTrigger`: contains no business logic. It checks the trigger context and delegates to the handler.
+- `LeadTriggerHandler.evaluatePriority(List<Lead>)`: loops over the records in `Trigger.new` and sets the priority on each one. No DML is needed, because the trigger runs *before* the save.
+- `LeadTriggerHandler.determinePriority(Lead)`: a `public static` method that takes **one** lead and returns the priority as a `String`. Keeping the rules in a small method that doesn't touch the database makes them quick to test directly.
+- `Lead_Priority__c`: custom picklist field on Lead (High, Medium, Low).
 
-## Get Started
+### Design decisions
+- **Handler pattern:** the trigger file stays tiny, and the logic lives in a class that can be tested on its own. I first wrote everything inside the trigger, then refactored, to see why the pattern exists.
+- **Single-lead method:** splitting out `determinePriority` meant boundary cases could be tested with in-memory leads and no inserts. Those tests run in a few milliseconds each, versus about a second for a test that inserts.
+- **Null-safe comparisons:** a blank `AnnualRevenue` is checked for `null` before it is compared, so leads with no revenue fall through to Low instead of causing surprises.
+- **Apex instead of a formula field:** this rule could be a formula field, and for a pure calculation like this one that would be the declarative-first choice. I implemented it in Apex deliberately, to practice trigger mechanics (before-trigger field updates, bulk-safe loops, handler structure, testing). In a production org, I would weigh the two options.
 
-Ready to start developing? The [Get Started with Salesforce DX](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_dev_get_started_dx.htm) guide walks you through your first project, from creating a scratch org to creating a simple Apex class or LWC to deploying your code to a sandbox.
+### Testing
+13 tests in `LeadTriggerHandlerTest`, with **100% coverage** on both `LeadTrigger` and `LeadTriggerHandler`.
 
-## Common Salesforce CLI Commands
+- **Rule tests (direct calls, no DML):** High, Medium and Low outcomes; both revenue boundaries (exactly 10,000,000 → High, exactly 1,000,000 → Medium, 999,999 → Low); Finance and Technology each on their own with low revenue; precedence of High over Medium; blank revenue; zero revenue; blank revenue and blank industry together.
+- **Integration test:** inserts a real lead to prove the trigger is wired up.
+- **Update tests:** a lead moves from Low to High when revenue increases, and from High to Medium when revenue drops and the industry changes to Finance.
+- **Bulk test:** inserts 200 leads in one DML statement and asserts the count and the exact priority of every lead.
 
-Here are common CLI commands that you'll use the most:
+**Mutation checks.** To confirm the tests would actually catch bugs, I deliberately broke the handler and re-ran the suite:
+- Changing `>=` to `>` on the 10,000,000 rule and on the 1,000,000 rule was caught by the boundary tests.
+- A typo in `'Finance'` was caught.
+- A typo in `'Technology'` was **not** caught, even with 100% coverage, because no test depended on that value. I added a Technology test, repeated the mutation, and it failed as it should. Coverage tells you which lines ran, and only assertions tell you whether they're right.
 
-- `sf org login web`: Authorize an org
-- `sf org open`: Open your org in a browser
-- `sf org create scratch`: Create a scratch org
-- `sf project deploy start`: Deploy metadata to your org
-- `sf project retrieve start`: Retrieve metadata from your org
-- `sf template generate <artifact>`: Scaffold new components, such as Apex classes and triggers, LWC components, Lightning apps, and more
-- `sf apex <command>`: Run Apex tests, run anonymous Apex blocks, and view logs
-- `sf data <command>`: Work with test data
-- `sf alias <command>`: Manage org aliases
-- `sf config <command>`: Configure CLI settings
+![alt text](image.png)
 
-## Use Agentforce Vibes to Build Lightning Apps
+### How to run
+Prerequisites: [Salesforce CLI](https://developer.salesforce.com/tools/salesforcecli), a Developer Edition org, and the org authorized with `sf org login web`.
 
-Transform your ideas into custom Lightning apps that extend CRM workflows directly in Lightning Experience. Through natural conversations with Agentforce Vibes, implement custom objects and fields, complex business logic, and dynamic UI components. See [Build a Lightning App Using Agentforce Vibes](https://developer.salesforce.com/docs/platform/einstein-for-devs/guide/lexapp-overview.html).
+```bash
+# Deploy
+sf project deploy start --source-dir force-app
 
-## Additional Resources
+# Run the tests with coverage
+sf apex run test --class-names LeadTriggerHandlerTest --result-format human --code-coverage --wait 10
+```
 
-- [Agentforce Vibes Developer Guide](https://developer.salesforce.com/docs/platform/einstein-for-devs/guide/einstein-overview.html)
-- [Salesforce CLI Installation Guide](https://developer.salesforce.com/docs/atlas.en-us.sfdx_setup.meta/sfdx_setup/sfdx_setup_intro.htm)
-- [Salesforce DX Developer Guide](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/)
-- [Salesforce CLI Command Reference](https://developer.salesforce.com/docs/atlas.en-us.sfdx_cli_reference.meta/sfdx_cli_reference/)
-- [Salesforce CLI Plugin Development Guide](https://developer.salesforce.com/docs/platform/salesforce-cli-plugin/guide/conceptual-overview.html)
-- [Salesforce VS Code Extensions Documentation](https://developer.salesforce.com/tools/vscode/)
-
+### Known limitations and possible next steps
+- **Manual edits are overwritten.** The trigger recalculates priority on every insert and update, so a value a user sets by hand is replaced on the next save. This isn't covered by a test yet. Options: make the field read-only on the page layout, or recalculate only when revenue or industry changes (comparing against `Trigger.oldMap`).
+- **Duplicate-email blocking** (a natural extension of this trigger) is not implemented yet.
